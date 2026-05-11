@@ -69,11 +69,15 @@ export interface IFigmaConnector {
   // Design lint
   lintDesign(nodeId?: string, rules?: string[], maxDepth?: number, maxFindings?: number): Promise<any>;
 
+  // Component accessibility audit
+  auditComponentAccessibility(nodeId?: string, targetSize?: number): Promise<any>;
+
   // FigJam operations
   createSticky(params: { text: string; color?: string; x?: number; y?: number }): Promise<any>;
   createStickies(params: { stickies: Array<{ text: string; color?: string; x?: number; y?: number }> }): Promise<any>;
-  createConnector(params: { startNodeId: string; endNodeId: string; label?: string }): Promise<any>;
-  createShapeWithText(params: { text?: string; shapeType?: string; x?: number; y?: number }): Promise<any>;
+  createConnector(params: { startNodeId: string; endNodeId: string; label?: string; startMagnet?: string; endMagnet?: string }): Promise<any>;
+  createShapeWithText(params: { text?: string; shapeType?: string; x?: number; y?: number; width?: number; height?: number; fillColor?: string; strokeColor?: string; fontSize?: number; strokeDashPattern?: string }): Promise<any>;
+  createSection(params: { name?: string; x?: number; y?: number; width?: number; height?: number; fillColor?: string }): Promise<any>;
   createTable(params: { rows: number; columns: number; data?: string[][]; x?: number; y?: number }): Promise<any>;
   createCodeBlock(params: { code: string; language?: string; x?: number; y?: number }): Promise<any>;
   getBoardContents(params: { nodeTypes?: string[]; maxNodes?: number }): Promise<any>;
@@ -93,8 +97,10 @@ export interface IFigmaConnector {
   getFocusedSlide(): Promise<any>;
   focusSlide(params: { slideId: string }): Promise<any>;
   skipSlide(params: { slideId: string; skip: boolean }): Promise<any>;
-  addTextToSlide(params: { slideId: string; text: string; x?: number; y?: number; fontSize?: number }): Promise<any>;
+  addTextToSlide(params: { slideId: string; text: string; x?: number; y?: number; fontSize?: number; fontFamily?: string; fontStyle?: string; color?: string; textAlign?: string; width?: number; lineHeight?: number; letterSpacing?: number; textCase?: string }): Promise<any>;
   addShapeToSlide(params: { slideId: string; shapeType: string; x: number; y: number; width: number; height: number; fillColor?: string }): Promise<any>;
+  setSlideBackground(params: { slideId: string; color: string }): Promise<any>;
+  getTextStyles(): Promise<any>;
 
   // Annotation operations
   getAnnotations(nodeId: string, includeChildren?: boolean, depth?: number): Promise<any>;

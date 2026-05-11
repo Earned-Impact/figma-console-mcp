@@ -1658,11 +1658,15 @@ export class FigmaDesktopConnector implements IFigmaConnector {
     }
   }
 
+  // Component accessibility audit — not supported via legacy CDP transport
+  async auditComponentAccessibility(): Promise<any> { throw new Error('Component accessibility audit requires WebSocket transport'); }
+
   // FigJam operations — not supported via legacy CDP transport
   async createSticky(): Promise<any> { throw new Error('FigJam operations require WebSocket transport'); }
   async createStickies(): Promise<any> { throw new Error('FigJam operations require WebSocket transport'); }
   async createConnector(): Promise<any> { throw new Error('FigJam operations require WebSocket transport'); }
   async createShapeWithText(): Promise<any> { throw new Error('FigJam operations require WebSocket transport'); }
+  async createSection(): Promise<any> { throw new Error('FigJam operations require WebSocket transport'); }
   async createTable(): Promise<any> { throw new Error('FigJam operations require WebSocket transport'); }
   async createCodeBlock(): Promise<any> { throw new Error('FigJam operations require WebSocket transport'); }
   async getBoardContents(): Promise<any> { throw new Error('FigJam operations require WebSocket transport'); }
@@ -1684,4 +1688,6 @@ export class FigmaDesktopConnector implements IFigmaConnector {
   async skipSlide(): Promise<any> { throw new Error('Slides operations require WebSocket transport'); }
   async addTextToSlide(): Promise<any> { throw new Error('Slides operations require WebSocket transport'); }
   async addShapeToSlide(): Promise<any> { throw new Error('Slides operations require WebSocket transport'); }
+  async setSlideBackground(): Promise<any> { throw new Error('Slides operations require WebSocket transport'); }
+  async getTextStyles(): Promise<any> { throw new Error('Text styles require WebSocket transport'); }
 }

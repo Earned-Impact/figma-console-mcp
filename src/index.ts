@@ -22,9 +22,11 @@ import { FigmaAPI, extractFileKey, formatVariables, formatComponentData } from "
 import { registerFigmaAPITools } from "./core/figma-tools.js";
 import { registerDesignCodeTools } from "./core/design-code-tools.js";
 import { registerCommentTools } from "./core/comment-tools.js";
+import { registerVersionTools } from "./core/version-tools.js";
 import { registerAnnotationTools } from "./core/annotation-tools.js";
 import { registerDeepComponentTools } from "./core/deep-component-tools.js";
 import { registerDesignSystemTools } from "./core/design-system-tools.js";
+import { registerAccessibilityTools } from "./core/accessibility-tools.js";
 import { PluginRelayDO, generatePairingCode } from "./core/cloud-websocket-relay.js";
 import { CloudWebSocketConnector } from "./core/cloud-websocket-connector.js";
 import { registerWriteTools } from "./core/write-tools.js";
@@ -71,7 +73,7 @@ function isFigmaPAT(token: string): boolean {
 export class FigmaConsoleMCPv3 extends McpAgent {
 	server = new McpServer({
 		name: "Figma Console MCP",
-		version: "1.19.2",
+		version: "1.23.0",
 	});
 
 	private browserManager: BrowserManager | null = null;
@@ -1028,6 +1030,14 @@ export class FigmaConsoleMCPv3 extends McpAgent {
 			{ isRemoteMode: true },
 		);
 
+		// Register Version History tools
+		registerVersionTools(
+			this.server,
+			async () => await this.getFigmaAPI(),
+			() => this.browserManager?.getCurrentUrl() || null,
+			{ isRemoteMode: true },
+		);
+
 		// Register Design System Kit tool
 		registerDesignSystemTools(
 			this.server,
@@ -1036,6 +1046,14 @@ export class FigmaConsoleMCPv3 extends McpAgent {
 			undefined, // variablesCache
 			{ isRemoteMode: true },
 		);
+
+		// Register code-side accessibility scanning (axe-core + JSDOM)
+		// Note: May not work in Cloudflare Workers due to JSDOM dependency
+		try {
+			registerAccessibilityTools(this.server);
+		} catch (e) {
+			// Silently skip if axe-core/jsdom not available in Workers environment
+		}
 
 		// Note: MCP Apps (Token Browser, Dashboard) are registered in local.ts only
 		// They require Node.js file system APIs that don't work in Cloudflare Workers
@@ -1321,7 +1339,7 @@ export default {
 
 			const statelessServer = new McpServer({
 				name: "Figma Console MCP",
-				version: "1.19.2",
+				version: "1.23.0",
 			});
 
 			// ================================================================
@@ -1452,6 +1470,12 @@ export default {
 				getCloudFileUrl,
 			);
 
+			registerVersionTools(
+				statelessServer,
+				async () => statelessApi,
+				getCloudFileUrl,
+			);
+
 			registerDesignSystemTools(
 				statelessServer,
 				async () => statelessApi,
@@ -1482,7 +1506,7 @@ export default {
 			const metadata = {
 				resource: url.origin,
 				authorization_servers: [`${url.origin}/`],
-				scopes_supported: ["file_content:read", "file_variables:read", "library_content:read"],
+				scopes_supported: ["file_content:read", "file_versions:read", "file_variables:read", "file_comments:read", "file_comments:write", "library_content:read"],
 				bearer_methods_supported: ["header"],
 				resource_signing_alg_values_supported: ["RS256"]
 			};
@@ -1502,7 +1526,7 @@ export default {
 				authorization_endpoint: `${url.origin}/authorize`,
 				token_endpoint: `${url.origin}/token`,
 				registration_endpoint: `${url.origin}/oauth/register`,
-				scopes_supported: ["file_content:read", "file_variables:read", "library_content:read"],
+				scopes_supported: ["file_content:read", "file_versions:read", "file_variables:read", "file_comments:read", "file_comments:write", "library_content:read"],
 				response_types_supported: ["code"],
 				grant_types_supported: ["authorization_code", "refresh_token"],
 				token_endpoint_auth_methods_supported: ["client_secret_basic", "client_secret_post"],
@@ -1575,7 +1599,7 @@ export default {
 			const figmaAuthUrl = new URL("https://www.figma.com/oauth");
 			figmaAuthUrl.searchParams.set("client_id", env.FIGMA_OAUTH_CLIENT_ID);
 			figmaAuthUrl.searchParams.set("redirect_uri", `${oauthOrigin}/oauth/callback`);
-			figmaAuthUrl.searchParams.set("scope", "file_content:read,file_variables:read,library_content:read");
+			figmaAuthUrl.searchParams.set("scope", "file_content:read,file_versions:read,file_variables:read,file_comments:read,file_comments:write,library_content:read");
 			figmaAuthUrl.searchParams.set("state", stateToken);
 			figmaAuthUrl.searchParams.set("response_type", "code");
 
@@ -1628,7 +1652,7 @@ export default {
 						token_type: "Bearer",
 						expires_in: Math.max(0, Math.floor((tokenData.expiresAt - Date.now()) / 1000)),
 						refresh_token: tokenData.refreshToken,
-						scope: "file_content:read file_variables:read library_content:read"
+						scope: "file_content:read file_versions:read file_variables:read file_comments:read file_comments:write library_content:read"
 					}), {
 						headers: {
 							"Content-Type": "application/json",
@@ -1719,7 +1743,7 @@ export default {
 					token_type: "Bearer",
 					expires_in: tokenData.expires_in,
 					refresh_token: tokenData.refresh_token || refreshToken,
-					scope: "file_content:read file_variables:read library_content:read"
+					scope: "file_content:read file_versions:read file_variables:read file_comments:read file_comments:write library_content:read"
 				}), {
 					headers: {
 						"Content-Type": "application/json",
@@ -1810,7 +1834,7 @@ export default {
 			const figmaAuthUrl = new URL("https://www.figma.com/oauth");
 			figmaAuthUrl.searchParams.set("client_id", env.FIGMA_OAUTH_CLIENT_ID);
 			figmaAuthUrl.searchParams.set("redirect_uri", redirectUri);
-			figmaAuthUrl.searchParams.set("scope", "file_content:read,file_variables:read,library_content:read");
+			figmaAuthUrl.searchParams.set("scope", "file_content:read,file_versions:read,file_variables:read,file_comments:read,file_comments:write,library_content:read");
 			figmaAuthUrl.searchParams.set("state", stateToken);
 			figmaAuthUrl.searchParams.set("response_type", "code");
 
@@ -1908,9 +1932,7 @@ export default {
 
 				logger.info({
 					sessionId,
-					hasAccessToken: !!accessToken,
-					accessTokenPreview: accessToken ? accessToken.substring(0, 10) + "..." : null,
-					hasRefreshToken: !!refreshToken,
+					hasTokens: !!accessToken && !!refreshToken,
 					expiresIn
 				}, "Token exchange successful");
 
@@ -2109,7 +2131,7 @@ export default {
 				JSON.stringify({
 					status: "healthy",
 					service: "Figma Console MCP",
-					version: "1.19.2",
+					version: "1.23.0",
 					endpoints: {
 						mcp: ["/sse", "/mcp"],
 						oauth_mcp_spec: ["/.well-known/oauth-authorization-server", "/authorize", "/token", "/oauth/register"],
@@ -2165,13 +2187,13 @@ export default {
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
 	<title>Figma Console MCP - The Most Comprehensive MCP Server for Figma</title>
 	<link rel="icon" type="image/svg+xml" href="https://docs.figma-console-mcp.southleft.com/favicon.svg">
-	<meta name="description" content="Turn your Figma design system into a living API. 90+ tools give AI assistants deep access to design tokens, component specs, variables, and programmatic design creation.">
+	<meta name="description" content="Turn your Figma design system into a living API. 100+ tools give AI assistants deep access to design tokens, component specs, variables, and programmatic design creation.">
 
 	<!-- Open Graph -->
 	<meta property="og:type" content="website">
 	<meta property="og:url" content="https://figma-console-mcp.southleft.com">
 	<meta property="og:title" content="Figma Console MCP - Turn Your Design System Into a Living API">
-	<meta property="og:description" content="The most comprehensive MCP server for Figma. 90+ tools give AI assistants deep access to design tokens, components, variables, and programmatic design creation.">
+	<meta property="og:description" content="The most comprehensive MCP server for Figma. 100+ tools give AI assistants deep access to design tokens, components, variables, and programmatic design creation.">
 	<meta property="og:image" content="https://docs.figma-console-mcp.southleft.com/images/og-image.jpg">
 	<meta property="og:image:width" content="1200">
 	<meta property="og:image:height" content="630">
@@ -2179,7 +2201,7 @@ export default {
 	<!-- Twitter -->
 	<meta name="twitter:card" content="summary_large_image">
 	<meta name="twitter:title" content="Figma Console MCP - Turn Your Design System Into a Living API">
-	<meta name="twitter:description" content="The most comprehensive MCP server for Figma. 90+ tools give AI assistants deep access to design tokens, components, variables, and programmatic design creation.">
+	<meta name="twitter:description" content="The most comprehensive MCP server for Figma. 100+ tools give AI assistants deep access to design tokens, components, variables, and programmatic design creation.">
 	<meta name="twitter:image" content="https://docs.figma-console-mcp.southleft.com/images/og-image.jpg">
 
 	<meta name="theme-color" content="#0D9488">
@@ -3066,7 +3088,7 @@ export default {
 			<div class="grid-cell showcase-cell rule-left">
 				<div class="showcase-label">What AI Can Access</div>
 				<div class="showcase-stat">
-					<span class="number">90+</span>
+					<span class="number">100+</span>
 					<span class="label">MCP tools for Figma</span>
 				</div>
 				<div class="capability-list">

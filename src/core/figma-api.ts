@@ -128,16 +128,7 @@ export class FigmaAPI {
     // Personal Access Tokens use X-Figma-Token header
     const isOAuthToken = this.accessToken.startsWith('figu_');
 
-    // Debug logging to verify token is being used
-    const tokenPreview = this.accessToken ? `${this.accessToken.substring(0, 10)}...` : 'NO TOKEN';
-    logger.info({
-      url,
-      tokenPreview,
-      hasToken: !!this.accessToken,
-      tokenLength: this.accessToken?.length,
-      isOAuthToken,
-      authMethod: isOAuthToken ? 'Bearer' : 'X-Figma-Token'
-    }, 'Making Figma API request with token');
+    logger.debug({ url, authMethod: isOAuthToken ? 'Bearer' : 'X-Figma-Token' }, 'Making Figma API request');
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -402,6 +393,42 @@ export class FigmaAPI {
     return this.request(`/files/${fileKey}/comments/${commentId}`, {
       method: 'DELETE',
     });
+  }
+
+  /**
+   * GET /v1/files/:file_key/versions
+   * List a file's version history. Cursor-style pagination via before/after
+   * (cursors are version IDs). Response includes pagination.prev_page and
+   * pagination.next_page as full URLs — Figma recommends following those
+   * directly rather than reconstructing cursors. Requires the
+   * `file_versions:read` OAuth scope (or PAT "Versions" Read permission).
+   */
+  async getFileVersions(
+    fileKey: string,
+    options?: {
+      page_size?: number;  // 1–50, default 30
+      before?: string;     // version id cursor — returns earlier versions
+      after?: string;      // version id cursor — returns later versions
+    },
+  ): Promise<{
+    versions: Array<{
+      id: string;
+      created_at: string;
+      label: string;
+      description: string;
+      user: { id: string; handle: string; img_url: string };
+    }>;
+    pagination?: {
+      prev_page?: string;
+      next_page?: string;
+    };
+  }> {
+    const params = new URLSearchParams();
+    if (options?.page_size !== undefined) params.set('page_size', String(options.page_size));
+    if (options?.before) params.set('before', options.before);
+    if (options?.after) params.set('after', options.after);
+    const query = params.toString() ? `?${params.toString()}` : '';
+    return this.request(`/files/${fileKey}/versions${query}`);
   }
 
   /**

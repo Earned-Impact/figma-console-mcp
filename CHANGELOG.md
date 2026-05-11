@@ -5,6 +5,144 @@ All notable changes to Figma Console MCP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.23.0] - 2026-05-09
+
+Time-series awareness for design files. Six new tools that turn a Figma file from a static snapshot into a queryable history — list versions, snapshot any past version, diff two versions for added/removed/modified components and binding deltas, generate human-readable markdown changelogs, and trace exactly when (and by whom) a specific component property or variant was introduced via a binary-search blame walker. All composable, all cache-aware (~log₂(N) probes for blame, repeat queries on the same range nearly free), all honest about Figma REST API limits in `notes[]` responses.
+
+Cloud Mode also unblocked: re-added `file_comments:read`, `file_comments:write`, and `file_versions:read` to the OAuth scope set so cloud users can post comments and use the new version-history tools. Local PAT users add the `Versions (Read)` checkbox alongside their existing scopes.
+
+### Added
+
+- `figma_get_file_versions` — list a file's version history with author/label/timestamp metadata. Auto-paginates, defaults to labeled-only (skips auto-saves), configurable cap. Cursor-style pagination with response-provided `next_cursor`.
+- `figma_get_file_at_version` — snapshot a file (or specific node IDs) as it existed at a past version. Thin wrapper over `getFile`/`getNodes` with the `version` param.
+- `figma_diff_versions` — structured diff between any two versions. Always returns a cheap page-structure diff (~2 API calls, parallel). When `component_ids` are passed, additionally produces per-node diffs at depth=2: added/removed children (variants), name/description changes, `componentPropertyDefinitions` changes, and `boundVariables` deltas. Mode-aware (`summary` / `standard` / `detailed`). Falls back to current Figma selection when `component_ids` omitted.
+- `figma_get_changes_since_version` — convenience wrapper for `figma_diff_versions` with `to_version="current"` (HEAD). Same selection fallback.
+- `figma_generate_changelog` — markdown changelog generator. Wraps the diff with author enrichment via `figma_get_file_versions` lookback (one extra cheap API call). Returns BOTH a `markdown` string (paste into release notes / PRs / Storybook MDX) and the structured diff payload. Mode-aware verbosity. HEAD renders as "Current state" without false attribution.
+- `figma_blame_node` — find the version that introduced a specific component property or variant. Walks history backward via binary search (~log₂(N) probes instead of N). Default `include_autosaves: true` because most autosaves carry the real human user; system 'Figma' user is flagged via `attribution_certainty: "system_attributed"`. Falls back to current Figma selection when `node_id` omitted. Honest about the monotonic-existence assumption in `notes[]`.
+- LRU snapshot cache (in-memory, 50 entries default) for past-version fetches. Past versions are immutable, so cached snapshots never go stale within a process. HEAD is intentionally never cached. Repeat blame/diff queries on the same range are nearly free.
+- Cloud-mode OAuth scopes: `file_comments:read`, `file_comments:write`, `file_versions:read` re-added so cloud users can post comments AND use the new version-history tools.
+
+### Changed
+
+- Property-comparison helpers (`figmaRGBAToHex`, `normalizeColor`, `numericClose`) extracted from `design-code-tools.ts` into a shared `src/core/diff/property-compare.ts` module so the diff engine and parity checker can share without circular deps. Re-exported from the original location for back-compat.
+- `summary.api_calls_made` on diff/changelog responses now reflects actual live calls (zero on a fully-cached repeat). New `cache_hits` field exposes how many fetches were served from cache.
+- Tool descriptions for blame/diff/changelog clarify that they fall back to the current Figma selection when scope is omitted.
+
+### Fixed
+
+- Versions list pagination cursor direction (`figma_get_file_versions`). The Figma REST API uses `?after=ID` (not `?before=`) to walk into older history; the inverted cursor was returning the same labeled version repeatedly. Empirically verified against a 1000+ version file.
+- `next_cursor` on `figma_get_file_versions` now reflects the LAST DISPLAYED item, not the last received from the API. Previous behavior would silently skip 40 versions if a caller paged forward with `max_versions=10` (since each page fetches 50 from Figma).
+- Changelog markdown formatter no longer emits double blank lines between component change-count subtitle and the first sub-section when no intermediate bullets are present.
+
+
+## [1.22.4] - 2026-04-28
+
+Critical patch release. Restores compatibility with Gemini CLI / OpenCode / Codex CLI clients that broke in v1.21+, fixes silent variable-fetch failures via the Desktop Bridge, and addresses the plugin-version cache-staleness pattern that caused "Unknown method" errors after upgrades.
+
+### Fixed
+- **Schema regression broke Gemini CLI / OpenCode / Codex CLI** — `figma_check_design_parity` used `z.tuple([z.number(), z.number()])` for `codeSpec.accessibility.renderedSize`, which `zod-to-json-schema` emits as `items: [{type:'number'},{type:'number'}]`. Gemini's stricter Function Calling validator rejects this with `"is not of type 'object', 'boolean'"`, crashing the entire CLI. Replaced with `z.array(z.number()).min(2).max(2)` — same runtime validation, Gemini-safe schema (`items: {type:'number'}` plus `minItems`/`maxItems`). Added a regression test that sweeps every tool registered by `registerDesignCodeTools` and fails CI if any schema reintroduces the tuple shape. Closes #64, #66.
+- **`figma_get_variables({refreshCache: true})` silently returned no variables via Desktop Bridge** — the plugin's `code.js` already wraps every `EXECUTE_CODE` payload in `(async function() { <code> })()`. The connectors at `src/core/websocket-connector.ts` and `src/core/cloud-websocket-connector.ts` were also wrapping the script body in an inner `(async () => { ... })()` IIFE; the inner `return` returned from the inner function but the outer async returned `undefined`, so the variables were silently dropped, the success guard at `figma-tools.ts:1926` failed, and the call fell through to the REST API fallback (which 403s on Pro/Org plans) — ending in "All methods failed." Both connectors now use a bare `try/catch` with top-level `return`. `figma-tools.ts` unwraps the `EXECUTE_CODE` response envelope so both transport paths produce a uniform shape downstream. Verified end-to-end: a ~700-variable file now returns the full token set instead of failing. Closes #68.
+- **Plugin version drift caused "Unknown method" errors after upgrades** — `figma-desktop-bridge/code.js` had `var PLUGIN_VERSION = '1.14.0'` hardcoded while the npm package shipped 1.22.3. Figma Desktop appears to use the plugin version string as a cache key; without bumping it, Figma kept serving cached pre-update plugin code, so methods added in newer versions (`DEEP_GET_COMPONENT` from v1.19.0, `ANALYZE_COMPONENT_SET`, etc.) hit a `methodMap` miss and failed with `"Unknown method: DEEP_GET_COMPONENT"` even after users re-imported the manifest. Bumped `PLUGIN_VERSION` to match `package.json`, added step 3b to `scripts/release.sh` to keep them in sync on every release, and added a regression test that asserts the two values stay equal. Closes #62.
+
+### Notes for users still hitting "Unknown method" after upgrading
+If `figma_get_component_for_development_deep` or `figma_analyze_component_set` still fails after installing v1.22.4, fully delete the plugin from Figma (Plugins → Manage Plugins → trash icon) and re-import the manifest. Re-importing alone does not always invalidate Figma's content cache.
+
+
+## [1.22.3] - 2026-04-07
+
+### Added
+- **`wcag-disabled-no-context`** rule — flags disabled variants that have no tooltip, helper text, or annotation explaining why the element is disabled. Based on accessibility consultant Isabella Minzly's guidance: use `aria-disabled` (not HTML `disabled`) to keep elements focusable for screen readers, and add a tooltip so all users understand the disabled reason.
+- **`token-misuse`** rule — flags semantic token misuse: `bg/*` variables used as text fills, or `text/*` variables used as background fills. Catches misbound tokens that may or may not produce contrast failures.
+- **WCAG conformance level tagging** — every finding now carries a `wcagLevel` field (`a`, `aa`, or `best-practice`). Teams targeting AA can filter out best-practice findings that don't represent legal requirements.
+
+### Fixed
+- **`wcag-focus-indicator` severity: warning → critical** — WCAG 2.4.7 (Focus Visible) is Level AA. Missing focus indicators are a blocker for keyboard users. Reviewed by Isabella Minzly.
+- **`wcag-line-height` and `wcag-paragraph-spacing` severity: warning → info** — WCAG 1.4.12 (Text Spacing) requires supporting user-overridden spacing, not requiring specific default values. Flagging every heading with 1.33x line-height was a misinterpretation that created unnecessary noise.
+- **`wcag-text-size` reclassified as best-practice** — WCAG 1.4.4 is about supporting 200% text-only zoom (use rem units), not about minimum pixel sizes. The 12px check remains as a readability best practice.
+- **13 rule descriptions corrected** based on Isabella Minzly's accessibility review spreadsheet, including proper large text thresholds, 1.4.12 user-override clarification, 320px minimum width for reflow, and decorative image guidance.
+
+
+## [1.22.0] - 2026-04-04
+
+Comprehensive accessibility scanning — full-spectrum WCAG coverage across design and code without maintaining a rule database. Design-side checks are bounded by Figma's API surface (~15 rules); code-side checks delegate to axe-core (104 rules from Deque).
+
+### Added
+- **9 new WCAG lint rules** in `figma_lint_design` — non-text contrast (1.4.11), color-only differentiation (1.4.1), focus indicators (2.4.7), letter/paragraph spacing (1.4.12), image alt text (1.1.1), heading hierarchy (1.3.1), reflow/responsive (1.4.10), reading order (1.3.2). Expands from 4 to 13 WCAG checks.
+- **`figma_audit_component_accessibility`** — deep accessibility scorecard for component sets with 6 audit categories: state coverage, focus indicator quality, non-color differentiation, target size consistency, annotation completeness, and color-blind simulation (protanopia/deuteranopia/tritanopia via Brettel/Vienot matrices). Returns weighted 0-100 score with prioritized recommendations.
+- **`figma_scan_code_accessibility`** — server-side HTML scanning via axe-core 4.11.2 + JSDOM. Runs ~50 structural/semantic checks (ARIA, labels, alt text, headings, landmarks, tabindex, duplicate IDs). Visual rules disabled (handled by design-side lint). No Figma connection required.
+- **`mapToCodeSpec` parameter** on `figma_scan_code_accessibility` — auto-generates a `codeSpec.accessibility` object from HTML + scan results, ready to pass directly into `figma_check_design_parity` for automated design-to-code accessibility parity checking.
+- **7 new design-to-code parity checks** in `figma_check_design_parity` — focus indicator parity (design variant ↔ :focus-visible), disabled state parity, error state parity, required field parity, semantic element matching (button→`<button>`), target size parity, keyboard interaction documentation.
+- **`CodeSpec.accessibility` fields** — `semanticElement`, `supportsDisabled`, `supportsError`, `renderedSize` for richer parity comparison.
+- **`axe-core`** and **`jsdom`** added as dependencies for code-side accessibility scanning.
+
+### Changed
+- `figma_lint_design` WCAG rule group expanded from 4 to 13 rules. Existing rules unchanged — fully backward compatible.
+- `figma_check_design_parity` accessibility comparison expanded from 2 to 9 checks. Existing CodeSpec fields remain optional.
+
+### Fixed
+- **Closed-world assumption in CodeSpec mapper** — `supportsDisabled` and `supportsError` now report `undefined` (unknown) instead of `false` when scanning a single HTML state snapshot. Prevents false positives when the scanned HTML is in default state but the component supports error/disabled states dynamically.
+
+
+## [1.22.1] - 2026-04-06
+
+### Fixed
+- **Component audit false positives on presentational components** — The audit tool was applying interactive-component expectations (hover, focus, disabled states) to all components. An Alert component scored 53/100 when it actually had excellent coverage of its real variant axes (5/5 types, 2/2 styles). Components are now classified as `interactive` (button, input, checkbox, toggle) or `presentational` (alert, badge, card, avatar, tooltip, progress) based on name and variant axis analysis. Presentational components are scored on variant axis completeness instead of interaction state coverage.
+- **Target size false positives on presentational components** — WCAG 2.5.8 defines minimum target size for interactive elements. Badges (16px), avatars (16x16), and other non-tap-target components were incorrectly flagged. Target size checks now only apply to interactive components; presentational components get `notApplicable` (scored 100%).
+- **Focus indicator false positives on presentational components** — Focus indicators are not expected on presentational components like alerts and badges. Now marked `notApplicable` instead of "missing".
+
+
+## [1.21.1] - 2026-04-01
+
+### Fixed
+- **Security: remove token metadata from production logs** — Removed `tokenPreview` (first 10 characters of access token), `tokenLength`, and `hasToken` fields from `logger.info` calls in `figma-api.ts`, `local.ts`, and `index.ts`. Development-time debugging that was never cleaned up. Reported by Samuel Klein, CISSP.
+
+
+## [1.21.0] - 2026-04-01
+
+Connection health protocol — agents no longer need custom health-check logic to detect and recover from bridge disconnections. Inspired by a connection resilience protocol shared by [Kaelig Deloumeau-Prigent](https://www.linkedin.com/in/kaelig/).
+
+### Added
+- **WebSocket heartbeat** — 30s ping/pong keepalive detects dead connections within ~60s instead of waiting for OS TCP keepalive (30-120s). Browser WebSocket auto-responds per RFC 6455 — no plugin changes needed.
+- **`failureLayer`** on `figma_get_status` — Machine-readable `1 | 2 | null` field distinguishing Layer 1 (MCP server) from Layer 2 (plugin bridge) failures. Agents can programmatically route recovery without parsing error strings.
+- **`probe` param** on `figma_get_status` — Optional active roundtrip verification (`probe: true`) sends a real command to the plugin and returns `probeResult: { success, latencyMs, error? }`. Replaces the need for canary calls.
+- **`recoverySteps[]`** on `figma_get_status` — Structured, actionable recovery instructions for each failure layer. Agents can execute or display these directly.
+- **`connectionError`** on bridge tool failures — Structured `{ layer, type, canRetry, recoverySteps }` object added to `figma_execute`, `figma_reconnect`, and bridge-dependent tool error responses. Backward compatible — existing `error`, `message`, `hint` fields unchanged.
+- **`lastPongAt`** in status response — Heartbeat diagnostic timestamp exposed in `transport.websocket` for connection health monitoring.
+- **`connectedClients`** on `/health` endpoint — Heartbeat-verified connected client count alongside raw `clients` count.
+
+### Changed
+- **`isClientConnected()`** now checks both socket `readyState` and heartbeat pong freshness (90s window), preventing phantom-connected state on silently dropped connections.
+
+### Fixed
+- **Plugin reconnect counter bug** — `wsReconnectAttempts` was a global counter shared across all ports, only reset during initial scan. Now resets on any successful reconnect, giving each disconnect the full retry budget.
+- **Plugin permanent death after retry cap** — After 5 rapid reconnect attempts, the plugin stopped trying permanently. Now starts a 30s background retry interval, automatically reconnecting when the MCP server restarts without requiring the user to reopen the plugin.
+
+
+## [1.20.1] - 2026-03-31
+
+### Added
+- **`figjam_create_section`** — New tool to create positioned, sized FigJam sections with fill color.
+
+### Changed
+- **`figjam_create_shape_with_text`** — Added `width`, `height`, `fillColor`, `strokeColor`, `fontSize`, `strokeDashPattern` parameters.
+- **`figjam_create_connector`** — Added `startMagnet`, `endMagnet` parameters (AUTO, TOP, BOTTOM, LEFT, RIGHT) for directional connector routing.
+
+### Fixed
+
+
+## [1.20.0] - 2026-03-29
+
+### Added
+- **`figma_set_slide_background`** — New tool to set a slide's background color with a single call. Creates a 1920x1080 rectangle named "Background" or updates the existing one. Eliminates the need for manual rectangle creation + z-ordering via `figma_execute`.
+- **`figma_get_text_styles`** — New tool to retrieve all local text styles with their IDs, font families, weights, sizes, and spacing. Works in any file type. Eliminates the need to discover text style IDs via `figma_execute`.
+- **14 new slides tests** covering both new tools and enhanced `figma_add_text_to_slide` parameters (49 total slides tests).
+
+### Changed
+- **`figma_add_text_to_slide` enhanced** — 8 new optional parameters: `fontFamily`, `fontStyle`, `color`, `textAlign`, `width`, `lineHeight`, `letterSpacing`, `textCase`. Enables production-quality slide text creation without falling back to `figma_execute`. Font is loaded dynamically based on family/style parameters.
+
+### Fixed
+
+
 ## [1.19.2] - 2026-03-27
 
 ### Added
@@ -536,6 +674,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Real-time Figma Desktop Bridge plugin
 - Support for both local (stdio) and Cloudflare Workers deployment
 
+[1.23.0]: https://github.com/southleft/figma-console-mcp/compare/v1.22.4...v1.23.0
+[1.22.4]: https://github.com/southleft/figma-console-mcp/compare/v1.22.3...v1.22.4
+[1.22.3]: https://github.com/southleft/figma-console-mcp/compare/v1.22.1...v1.22.3
+[1.22.1]: https://github.com/southleft/figma-console-mcp/compare/v1.22.0...v1.22.1
+[1.22.0]: https://github.com/southleft/figma-console-mcp/compare/v1.21.1...v1.22.0
+[1.21.1]: https://github.com/southleft/figma-console-mcp/compare/v1.21.0...v1.21.1
+[1.21.0]: https://github.com/southleft/figma-console-mcp/compare/v1.20.1...v1.21.0
+[1.20.1]: https://github.com/southleft/figma-console-mcp/compare/v1.20.0...v1.20.1
+[1.20.0]: https://github.com/southleft/figma-console-mcp/compare/v1.19.2...v1.20.0
 [1.19.2]: https://github.com/southleft/figma-console-mcp/compare/v1.19.1...v1.19.2
 [1.19.1]: https://github.com/southleft/figma-console-mcp/compare/v1.19.0...v1.19.1
 [1.19.0]: https://github.com/southleft/figma-console-mcp/compare/v1.18.0...v1.19.0

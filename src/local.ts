@@ -34,9 +34,11 @@ import {
 import { registerFigmaAPITools } from "./core/figma-tools.js";
 import { registerDesignCodeTools } from "./core/design-code-tools.js";
 import { registerCommentTools } from "./core/comment-tools.js";
+import { registerVersionTools } from "./core/version-tools.js";
 import { registerAnnotationTools } from "./core/annotation-tools.js";
 import { registerDeepComponentTools } from "./core/deep-component-tools.js";
 import { registerDesignSystemTools } from "./core/design-system-tools.js";
+import { registerAccessibilityTools } from "./core/accessibility-tools.js";
 import { FigmaDesktopConnector } from "./core/figma-desktop-connector.js";
 import type { IFigmaConnector } from "./core/figma-connector.js";
 import { FigmaWebSocketServer } from "./core/websocket-server.js";
@@ -228,13 +230,7 @@ If Design Systems Assistant MCP is not available, install it from: https://githu
 				);
 			}
 
-			logger.info(
-				{
-					tokenPreview: `${accessToken.substring(0, 10)}...`,
-					tokenLength: accessToken.length,
-				},
-				"Initializing Figma API with token from environment",
-			);
+			logger.debug({ authMethod: accessToken.startsWith('figu_') ? 'OAuth' : 'PAT' }, 'Initializing Figma API');
 
 			this.figmaAPI = new FigmaAPI({ accessToken });
 		}
@@ -283,12 +279,95 @@ If Design Systems Assistant MCP is not available, install it from: https://githu
 		}
 
 		const wsPort = this.wsActualPort || this.wsPreferredPort || DEFAULT_WS_PORT;
-		throw new Error(
+		const err = new Error(
 			"Cannot connect to Figma Desktop.\n\n" +
 			"Open the Desktop Bridge plugin in Figma (Plugins → Development → Figma Desktop Bridge).\n" +
 			`The plugin will connect automatically to ws://localhost:${wsPort}.\n` +
 			"No special launch flags needed."
 		);
+		// Attach structured connection error for programmatic agent recovery
+		(err as any).connectionError = this.buildConnectionError(err);
+		throw err;
+	}
+
+	/**
+	 * Build a bridge tool error response with structured connectionError.
+	 * Extracts connectionError from enhanced Error objects thrown by getDesktopConnector(),
+	 * or computes it on-demand for other errors. Backward compatible — adds connectionError
+	 * alongside existing error/message/hint fields.
+	 */
+	private bridgeToolError(error: unknown, message: string, hint: string) {
+		const errorMsg = error instanceof Error ? error.message : String(error);
+		const connectionError = (error as any)?.connectionError || this.buildConnectionError(error);
+		return {
+			content: [
+				{
+					type: "text" as const,
+					text: JSON.stringify({
+						error: errorMsg,
+						message,
+						hint,
+						connectionError,
+					}),
+				},
+			],
+			isError: true as const,
+		};
+	}
+
+	/**
+	 * Build a structured connectionError object for bridge-dependent tool failures.
+	 * Added alongside existing error/message/hint fields for backward compatibility.
+	 * Agents can key on this field for programmatic recovery instead of parsing hint strings.
+	 */
+	private buildConnectionError(error: Error | unknown): {
+		layer: 1 | 2;
+		type: string;
+		canRetry: boolean;
+		recoverySteps: string[];
+	} {
+		const errorMsg = error instanceof Error ? error.message : String(error);
+		const wsServerRunning = this.wsServer?.isStarted() ?? false;
+		const isTimeout = errorMsg.includes('timed out');
+		const isNoClient = errorMsg.includes('No active file') || errorMsg.includes('No WebSocket client');
+
+		if (!wsServerRunning) {
+			return {
+				layer: 1,
+				type: 'MCP_SERVER_UNAVAILABLE',
+				canRetry: true,
+				recoverySteps: [
+					"Ensure your AI client is running with figma-console-mcp configured",
+					"Check for port conflicts: lsof -i :9223-9232 | grep LISTEN",
+					"Restart your AI client — the MCP server starts automatically",
+				],
+			};
+		}
+
+		if (isTimeout) {
+			return {
+				layer: 2,
+				type: 'BRIDGE_COMMAND_TIMEOUT',
+				canRetry: true,
+				recoverySteps: [
+					"The plugin may be unresponsive — close and reopen the Desktop Bridge plugin in Figma",
+					"If the issue persists, restart Figma Desktop",
+					"Call figma_get_status with probe:true to verify the connection",
+				],
+			};
+		}
+
+		return {
+			layer: isNoClient ? 2 : 2,
+			type: isNoClient ? 'BRIDGE_NOT_CONNECTED' : 'BRIDGE_ERROR',
+			canRetry: !isNoClient,
+			recoverySteps: [
+				"Open Figma Desktop with your target file",
+				"Go to Plugins → Development → Figma Desktop Bridge",
+				"Click 'Run' to open the plugin",
+				"Wait 3 seconds, then call figma_get_status with probe:true to verify",
+			],
+		};
 	}
 
 	/**
@@ -1263,9 +1342,11 @@ If Design Systems Assistant MCP is not available, install it from: https://githu
 		// Tool 7: Get Status (with setup validation)
 		this.server.tool(
 			"figma_get_status",
-			"Check connection status to Figma Desktop. Reports transport status and connection health via the Desktop Bridge plugin (WebSocket transport).",
-			{},
-			async () => {
+			"Check connection status to Figma Desktop. Reports transport status and connection health via the Desktop Bridge plugin (WebSocket transport). Use probe:true for an active roundtrip verification that the plugin is actually responding.",
+			{
+				probe: z.boolean().optional().describe("When true, sends a live roundtrip command to the plugin to verify the connection is actually responsive (not just TCP-open). Returns probeResult with success/latency. Recommended for health checks."),
+			},
+			async ({ probe }) => {
 				try {
 					// Check WebSocket availability
 					const wsConnected = this.wsServer?.isClientConnected() ?? false;
@@ -1304,6 +1385,52 @@ If Design Systems Assistant MCP is not available, install it from: https://githu
 					}
 
 					const setupValid = activeTransport !== "none";
+
+					// Compute failure layer for machine-readable diagnostics
+					// Layer 1 = MCP server/WS server issue, Layer 2 = plugin bridge not connected
+					const wsServerRunning = this.wsServer?.isStarted() ?? false;
+					const failureLayer: 1 | 2 | null = setupValid
+						? null
+						: !wsServerRunning
+							? 1
+							: 2;
+
+					// Active probe: verify the plugin actually responds to commands
+					let probeResult: { success: boolean; latencyMs: number; error?: string } | undefined;
+					if (probe) {
+						const probeStart = Date.now();
+						try {
+							const result = await this.wsServer!.sendCommand('GET_FILE_INFO', {}, 3000);
+							probeResult = {
+								success: !!(result && result.fileInfo),
+								latencyMs: Date.now() - probeStart,
+							};
+						} catch (probeError: any) {
+							probeResult = {
+								success: false,
+								latencyMs: Date.now() - probeStart,
+								error: probeError?.message || String(probeError),
+							};
+						}
+					}
+
+					// Recovery steps for agents to act on programmatically
+					const recoverySteps: string[] | undefined = setupValid
+						? undefined
+						: failureLayer === 1
+							? [
+								"Ensure your AI client (Claude Code, Cursor, etc.) is running with figma-console-mcp configured",
+								"Check if all ports 9223-9232 are occupied: lsof -i :9223-9232 | grep LISTEN",
+								"Kill stale processes if needed: pkill -f figma-console-mcp",
+								"Restart your AI client — the MCP server will start automatically on the next tool call",
+							]
+							: [
+								"Open Figma Desktop with your target file",
+								"Go to Plugins → Development → Figma Desktop Bridge",
+								"Click 'Run' to open the plugin",
+								"Wait 3 seconds for the WebSocket connection to establish",
+								"Call figma_get_status with probe:true to verify the connection",
+							];
 
 					return {
 						content: [
@@ -1371,10 +1498,14 @@ If Design Systems Assistant MCP is not available, install it from: https://githu
 														page: sel.page,
 													};
 												})(),
+												lastPongAt: this.wsServer?.getActiveClientLastPongAt() ? new Date(this.wsServer.getActiveClientLastPongAt()!).toISOString() : undefined,
 											},
 										},
 										setup: {
 											valid: setupValid,
+											failureLayer,
+											probeResult,
+											recoverySteps,
 											message: activeTransport === "websocket"
 												? this.wsActualPort !== this.wsPreferredPort
 													? `✅ Connected to Figma Desktop via WebSocket Bridge (port ${this.wsActualPort}, fallback from ${this.wsPreferredPort})`
@@ -1529,6 +1660,7 @@ If Design Systems Assistant MCP is not available, install it from: https://githu
 											error instanceof Error ? error.message : String(error),
 										message: "Failed to reconnect to Figma Desktop",
 										hint: "Open the Desktop Bridge plugin in Figma",
+										connectionError: this.buildConnectionError(error),
 									},
 								),
 							},
@@ -1999,6 +2131,7 @@ Layers: If your code creates helper frames, placeholder nodes, or intermediate l
 									error: lastError?.message || "Unknown error",
 									message: "Failed to execute code in Figma plugin context",
 									hint: "Make sure the Desktop Bridge plugin is running in Figma",
+									connectionError: this.buildConnectionError(lastError),
 								},
 							),
 						},
@@ -2056,22 +2189,7 @@ Layers: If your code creates helper frames, placeholder nodes, or intermediate l
 					};
 				} catch (error) {
 					logger.error({ error }, "Failed to update variable");
-					return {
-						content: [
-							{
-								type: "text",
-								text: JSON.stringify(
-									{
-										error:
-											error instanceof Error ? error.message : String(error),
-										message: "Failed to update variable",
-										hint: "Make sure the Desktop Bridge plugin is running and the variable ID is correct",
-									},
-								),
-							},
-						],
-						isError: true,
-					};
+					return this.bridgeToolError(error, "Failed to update variable", "Make sure the Desktop Bridge plugin is running and the variable ID is correct");
 				}
 			},
 		);
@@ -5728,14 +5846,18 @@ return {
 		// Tool: Lint Design for accessibility and quality issues
 		this.server.tool(
 			"figma_lint_design",
-			"Run accessibility (WCAG) and design quality checks on the current page or a specific node tree. " +
-			"Checks color contrast ratios, text sizing, touch targets, hardcoded values, detached components, " +
-			"naming conventions, and layout quality. Returns categorized findings with severity levels. " +
+			"Run comprehensive accessibility (WCAG 2.2) and design quality checks on the current page or a specific node tree. " +
+			"WCAG checks (14 rules): color contrast (AA), non-text contrast (1.4.11), color-only differentiation (1.4.1), " +
+			"focus indicators (2.4.7), text sizing, touch targets, line height, letter spacing, paragraph spacing (1.4.12), " +
+			"image alt text (1.1.1), heading hierarchy (1.3.1), reflow/responsive (1.4.10), reading order (1.3.2), and disabled context (4.1.2). " +
+			"Design system checks: hardcoded colors, missing text styles, default names, detached components. " +
+			"Layout checks: missing auto-layout, empty containers. " +
+			"Returns categorized findings with severity levels (critical/warning/info) and WCAG conformance level (a/aa/aaa/best-practice) so teams can filter by target level. " +
 			"Use natural language like 'check my design for accessibility issues' or 'lint this page'. " +
 			"Requires Desktop Bridge plugin.",
 			{
 				nodeId: z.string().optional().describe("Node ID to lint (defaults to current page)"),
-				rules: z.array(z.string()).optional().describe("Rule filter: ['all'] (default), ['wcag'], ['design-system'], ['layout'], or specific rule IDs like ['wcag-contrast', 'detached-component']"),
+				rules: z.array(z.string()).optional().describe("Rule filter: ['all'] (default), ['wcag'] (13 WCAG rules), ['design-system'], ['layout'], or specific rule IDs like ['wcag-contrast', 'wcag-focus-indicator', 'wcag-disabled-no-context']"),
 				maxDepth: z.number().optional().describe("Maximum tree depth to traverse (default: 10)"),
 				maxFindings: z.number().optional().describe("Maximum findings before stopping (default: 100)"),
 			},
@@ -5779,6 +5901,54 @@ return {
 			},
 		);
 
+		// Tool: Audit Component Accessibility
+		this.server.tool(
+			"figma_audit_component_accessibility",
+			"Deep accessibility audit for a specific component or component set. Produces a scorecard covering: " +
+			"state coverage (default/hover/focus/disabled/error/active/loading), focus indicator quality and contrast, " +
+			"non-color differentiation (WCAG 1.4.1), target size consistency (WCAG 2.5.8), annotation completeness, " +
+			"and color-blind simulation (protanopia/deuteranopia/tritanopia). Returns per-category scores (0-100) " +
+			"and prioritized recommendations. Use after designing a component to validate accessibility before handoff. " +
+			"Requires Desktop Bridge plugin.",
+			{
+				nodeId: z.string().optional().describe("Node ID of a COMPONENT_SET, COMPONENT, or INSTANCE to audit. Falls back to current selection if omitted."),
+				targetSize: z.number().optional().describe("Minimum touch target size in px (default: 24 per WCAG 2.5.8). Use 44 for iOS or 48 for Android guidelines."),
+			},
+			async ({ nodeId, targetSize }) => {
+				try {
+					const connector = await this.getDesktopConnector();
+					const result = await connector.auditComponentAccessibility(nodeId, targetSize);
+
+					if (!result.success) {
+						throw new Error(result.error || "Audit failed");
+					}
+
+					return {
+						content: [
+							{
+								type: "text",
+								text: JSON.stringify(result.data || result, null, 2),
+							},
+						],
+					};
+				} catch (error) {
+					logger.error({ error }, "Failed to audit component accessibility");
+					return {
+						content: [
+							{
+								type: "text",
+								text: JSON.stringify({
+									error: error instanceof Error ? error.message : String(error),
+									hint: "Make sure the Desktop Bridge plugin is running. Provide a COMPONENT_SET nodeId or select one in Figma.",
+								}),
+							},
+						],
+						isError: true,
+					};
+				}
+			},
+		);
+
 		// Register Figma API tools (Tools 8-11)
 		registerFigmaAPITools(
 			this.server,
@@ -5809,6 +5979,19 @@ return {
 			() => this.getCurrentFileUrl(),
 		);
 
+		// Register Version History tools
+		registerVersionTools(
+			this.server,
+			() => this.getFigmaAPI(),
+			() => this.getCurrentFileUrl(),
+			undefined, // options
+			() => {
+				// Selection fallback for blame/diff/changelog tools
+				const sel = this.wsServer?.getCurrentSelection();
+				return sel?.nodes?.map((n) => n.id) ?? null;
+			},
+		);
+
 		// Register Design System Kit tool
 		registerDesignSystemTools(
 			this.server,
@@ -5816,6 +5999,9 @@ return {
 			() => this.getCurrentFileUrl(),
 			this.variablesCache,
 		);
+
+		// Register code-side accessibility scanning (axe-core + JSDOM)
+		registerAccessibilityTools(this.server);
 
 		// Register Annotation tools (read/write design annotations via Desktop Bridge)
 		registerAnnotationTools(

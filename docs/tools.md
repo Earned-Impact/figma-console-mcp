@@ -7,7 +7,7 @@ description: "Complete API reference for all 90+ MCP tools, including parameters
 
 This guide provides detailed documentation for each tool, including when to use them and best practices.
 
-> **Note:** Local Mode (NPX/Git) provides **90+ tools** with full read/write capabilities and real-time monitoring. Remote Mode provides **9 read-only tools** by default, or **61 tools** (including full write access) when paired with the Desktop Bridge plugin via Cloud Relay. Tools marked "Local" in the table below require Local Mode. Tools marked "Local / Cloud" work in both Local Mode and Cloud Mode (after pairing).
+> **Note:** Local Mode (NPX/Git) provides **100+ tools** with full read/write capabilities and real-time monitoring. Remote Mode provides **9 read-only tools** by default, or **61 tools** (including full write access) when paired with the Desktop Bridge plugin via Cloud Relay. Tools marked "Local" in the table below require Local Mode. Tools marked "Local / Cloud" work in both Local Mode and Cloud Mode (after pairing).
 
 ## Quick Reference
 
@@ -72,7 +72,9 @@ This guide provides detailed documentation for each tool, including when to use 
 | | `figma_set_strokes` | Set stroke colors | Local / Cloud |
 | | `figma_create_child` | Create child node | Local / Cloud |
 | **🖼️ Image** | `figma_set_image_fill` | Set image fill on nodes | Local / Cloud |
-| **🔍 Design Lint** | `figma_lint_design` | WCAG accessibility and design quality checks | Local / Cloud |
+| **🔍 Accessibility** | `figma_lint_design` | 14 WCAG checks with AA/best-practice level tagging | Local / Cloud |
+| | `figma_audit_component_accessibility` | Deep component scorecard: states, focus, color-blind simulation | Local / Cloud |
+| | `figma_scan_code_accessibility` | Scan HTML with axe-core (104 rules): ARIA, labels, landmarks, semantics | Local / Cloud |
 | **📌 FigJam** | `figjam_create_sticky` | Create a sticky note | Local / Cloud |
 | | `figjam_create_stickies` | Batch create up to 200 stickies | Local / Cloud |
 | | `figjam_create_connector` | Connect two nodes with optional label | Local / Cloud |
@@ -82,6 +84,12 @@ This guide provides detailed documentation for each tool, including when to use 
 | | `figjam_auto_arrange` | Arrange nodes in grid/row/column layout | Local / Cloud |
 | | `figjam_get_board_contents` | Read all content from a FigJam board | Local / Cloud |
 | | `figjam_get_connections` | Read the connection graph | Local / Cloud |
+| **🕒 Version History** | `figma_get_file_versions` | List version history with author/label/timestamp metadata | All |
+| | `figma_get_file_at_version` | Snapshot a file (or specific nodes) at a past version | All |
+| | `figma_diff_versions` | Structured diff between two versions: page changes, component property/binding deltas | All |
+| | `figma_get_changes_since_version` | Convenience wrapper: diff against current HEAD | All |
+| | `figma_generate_changelog` | Markdown changelog with author enrichment, ready for release notes | All |
+| | `figma_blame_node` | Binary-search blame walker: find when (and by whom) a property/variant was introduced | All |
 | **☁️ Cloud Relay** | `figma_pair_plugin` | Generate pairing code for Desktop Bridge | Cloud |
 
 ---
@@ -2124,19 +2132,21 @@ figma_set_image_fill({
 
 ---
 
-## 🔍 Design Lint Tool
+## 🔍 Accessibility Tools
+
+Three tools provide full-spectrum accessibility coverage across design and code — without maintaining a rule database. Design-side checks are bounded by Figma's API; code-side checks delegate to axe-core (Deque).
 
 ### `figma_lint_design`
 
-Run accessibility (WCAG) and design quality checks on the current page or a specific node tree. Returns categorized findings with severity levels.
+Run comprehensive WCAG 2.2 accessibility and design quality checks on the current page or a specific node tree. Returns categorized findings with severity levels.
 
 **Mode:** Local / Cloud
 
 **When to Use:**
-- Checking designs for WCAG accessibility compliance
+- Checking designs for WCAG accessibility compliance (14 checks)
 - Finding hardcoded colors that should use design tokens
-- Detecting detached components in your file
-- Auditing naming conventions and layout quality
+- Detecting detached components, missing focus variants, color-only states
+- Auditing heading hierarchy, reading order, reflow readiness
 - Pre-handoff quality checks
 
 **Usage:**
@@ -2144,7 +2154,7 @@ Run accessibility (WCAG) and design quality checks on the current page or a spec
 // Lint the current page for all issues
 figma_lint_design()
 
-// Only WCAG accessibility checks
+// Only WCAG accessibility checks (14 rules)
 figma_lint_design({
   rules: ["wcag"]
 })
@@ -2156,7 +2166,7 @@ figma_lint_design({
 
 // Specific rules only
 figma_lint_design({
-  rules: ["wcag-contrast", "detached-component"],
+  rules: ["wcag-contrast", "wcag-focus-indicator", "wcag-image-alt"],
   maxFindings: 50
 })
 
@@ -2169,7 +2179,7 @@ figma_lint_design({
 
 **Parameters:**
 - `nodeId` (optional): Node ID to lint (defaults to current page)
-- `rules` (optional): Rule filter — `["all"]` (default), `["wcag"]`, `["design-system"]`, `["layout"]`, or specific rule IDs
+- `rules` (optional): Rule filter — `["all"]` (default), `["wcag"]` (14 rules), `["design-system"]`, `["layout"]`, or specific rule IDs
 - `maxDepth` (optional): Maximum tree depth to traverse (default: 10)
 - `maxFindings` (optional): Maximum findings before stopping (default: 100)
 
@@ -2177,24 +2187,37 @@ figma_lint_design({
 
 | Group | Rules | What It Checks |
 |-------|-------|---------------|
-| `wcag` | `wcag-contrast`, `wcag-text-size`, `wcag-target-size`, `wcag-line-height` | WCAG accessibility compliance |
-| `design-system` | `hardcoded-color`, `no-text-style`, `default-name`, `detached-component` | Design system hygiene |
+| `wcag` | 14 rules (see below) | WCAG accessibility compliance |
+| `design-system` | `hardcoded-color`, `no-text-style`, `default-name`, `detached-component`, `token-misuse` | Design system hygiene |
 | `layout` | `no-autolayout`, `empty-container` | Layout quality |
+
+Each finding includes a `wcagLevel` field (`a`, `aa`, or `best-practice`) so teams can filter by their target conformance level.
 
 **Individual Rules:**
 
-| Rule | Severity | Description |
-|------|----------|-------------|
-| `wcag-contrast` | critical | Text foreground/background contrast ratio below WCAG AA (4.5:1 normal, 3:1 large text) |
-| `wcag-text-size` | warning | Text nodes with font size below 12px |
-| `wcag-target-size` | critical | Interactive elements (buttons, inputs, etc.) smaller than 24x24px |
-| `wcag-line-height` | warning | Line height below 1.5x the font size (supports pixel and percent values) |
-| `hardcoded-color` | warning | Solid fills not bound to a variable or paint style |
-| `no-text-style` | warning | Text nodes without an applied text style |
-| `default-name` | warning | Nodes with generic Figma names (Frame 1, Rectangle 3, etc.) |
-| `detached-component` | warning | Frames with component naming convention (contains "/") but not actually a component or instance |
-| `no-autolayout` | warning | Frames with 2+ children that don't use auto-layout |
-| `empty-container` | info | Frames with zero children |
+| Rule | Severity | Level | Description |
+|------|----------|-------|-------------|
+| `wcag-contrast` | critical | AA | Text contrast below 4.5:1 (3:1 for large text ≥24px or ≥18.5px bold) |
+| `wcag-non-text-contrast` | critical | AA | UI component/graphical object below 3:1 against background |
+| `wcag-color-only` | critical | A | Information conveyed only through color (no icon/border indicator) |
+| `wcag-target-size` | critical | AA | Interactive elements smaller than 24x24px |
+| `wcag-focus-indicator` | critical | AA | Interactive component missing focus variant or visible indicator — blocker for keyboard users |
+| `wcag-disabled-no-context` | warning | AA | Disabled variant has no tooltip/helper text explaining why disabled. Recommends aria-disabled over HTML disabled to keep element focusable for screen readers. |
+| `wcag-text-size` | warning | best-practice | Text below 12px (readability best practice — WCAG 1.4.4 is about zoom support, not minimum size) |
+| `wcag-letter-spacing` | warning | best-practice | Negative letter spacing harms readability |
+| `wcag-image-alt` | warning | A | Image fills without description annotation |
+| `wcag-heading-hierarchy` | warning | A | Heading levels skip (e.g., H1 → H3) |
+| `wcag-reflow` | warning | AA | Fixed-position frames; content must support 320px min width (400% zoom on 1280px) |
+| `wcag-reading-order` | warning | A | Layer order doesn't match visual reading order |
+| `wcag-line-height` | info | best-practice | Line height below 1.5x (WCAG 1.4.12 requires supporting user overrides, not specific defaults) |
+| `wcag-paragraph-spacing` | info | best-practice | Paragraph spacing below 2x font size (same — about user override support) |
+| `token-misuse` | warning | — | Variable name prefix doesn't match usage (e.g., bg/* token as text fill) |
+| `hardcoded-color` | warning | — | Solid fills not bound to a variable or style |
+| `no-text-style` | warning | — | Text nodes without an applied text style |
+| `default-name` | warning | — | Nodes with generic Figma names |
+| `detached-component` | warning | — | Frames with component naming but not a component |
+| `no-autolayout` | warning | — | Frames with 2+ children without auto-layout |
+| `empty-container` | info | — | Frames with zero children |
 
 **Returns:**
 ```json
@@ -2229,6 +2252,98 @@ figma_lint_design({
 - "Are there any detached components?"
 - "Run a WCAG contrast check"
 - "Audit the design quality"
+
+### `figma_audit_component_accessibility`
+
+Deep accessibility audit for a specific component or component set. Produces a scorecard covering state coverage, focus indicator quality, non-color differentiation, target size consistency, annotation completeness, and color-blind simulation.
+
+**Mode:** Local / Cloud
+
+**When to Use:**
+- Validating a component's accessibility before design handoff
+- Checking if all interactive states (focus, disabled, error) are present
+- Verifying color-blind safety with protanopia/deuteranopia/tritanopia simulation
+- Auditing whether components have accessibility documentation
+
+**Usage:**
+```javascript
+// Audit a component set
+figma_audit_component_accessibility({
+  nodeId: "438:1401"
+})
+
+// Audit with iOS touch target minimum (44px)
+figma_audit_component_accessibility({
+  nodeId: "438:1401",
+  targetSize: 44
+})
+
+// Audit current selection (no nodeId needed)
+figma_audit_component_accessibility()
+```
+
+**Parameters:**
+- `nodeId` (optional): Node ID of a COMPONENT_SET, COMPONENT, or INSTANCE. Falls back to current selection.
+- `targetSize` (optional): Minimum touch target size in px (default: 24 per WCAG 2.5.8). Use 44 for iOS, 48 for Android.
+
+**Scoring (0-100):**
+
+| Category (weight) | What It Checks |
+|---|---|
+| State Coverage (20%) | Presence of default, hover, focus, disabled, error, active, loading variants |
+| Focus Indicator (20%) | Focus variant exists + has visible stroke or shadow |
+| Color Differentiation (15%) | Status states use more than just color |
+| Target Size (15%) | All variants meet minimum touch target |
+| Annotations (10%) | Component description + accessibility notes |
+| Color-Blind Safety (20%) | Contrast preserved under protanopia, deuteranopia, tritanopia |
+
+### `figma_scan_code_accessibility`
+
+Scan HTML code for accessibility violations using axe-core (Deque). Runs structural/semantic checks via JSDOM — no browser needed. Visual rules (color contrast) are disabled since they're handled by `figma_lint_design`.
+
+**Mode:** Local / Cloud (standalone — no Figma connection required)
+
+**When to Use:**
+- Scanning component HTML for ARIA, label, and semantic issues
+- Checking code accessibility before merging
+- Generating a CodeSpec for design-to-code parity comparison
+- Validating that implemented code matches design accessibility intent
+
+**Usage:**
+```javascript
+// Scan component HTML
+figma_scan_code_accessibility({
+  html: '<button></button><img src="photo.jpg">'
+})
+
+// Filter to WCAG 2.0 AA rules only
+figma_scan_code_accessibility({
+  html: '<input type="text">',
+  tags: ["wcag2aa"]
+})
+
+// Auto-generate CodeSpec for parity checking
+figma_scan_code_accessibility({
+  html: '<button aria-label="Save" disabled>Save</button>',
+  mapToCodeSpec: true
+})
+```
+
+**Parameters:**
+- `html` (required): HTML string to scan (fragment or full document)
+- `tags` (optional): WCAG tag filter — `["wcag2a"]`, `["wcag2aa"]`, `["wcag22aa"]`, `["best-practice"]`
+- `context` (optional): CSS selector to scope the scan
+- `mapToCodeSpec` (optional): If true, auto-generates `codeSpecAccessibility` for use with `figma_check_design_parity`
+- `includePassingRules` (optional): Include pass/incomplete counts
+
+**End-to-end workflow:**
+```
+1. figma_lint_design          → visual a11y on design side
+2. figma_audit_component_a11y → component scorecard
+3. figma_scan_code_a11y       → structural a11y on code side
+   └─ mapToCodeSpec: true     → auto-generate CodeSpec
+4. figma_check_design_parity  → compare design intent vs code
+```
 
 ---
 
@@ -2393,6 +2508,109 @@ Generate a pairing code to connect the Figma Desktop Bridge plugin to the cloud 
 4. All subsequent write tool calls route through the relay to the plugin
 
 **Important:** The pairing code expires after 5 minutes. If it expires before the plugin connects, generate a new one.
+
+---
+
+## 🕒 Version History Tools
+
+Six tools that turn a Figma file from a static snapshot into a queryable history. They compose: list versions → diff → generate changelog → blame specific changes back to the version that introduced them. All cache aware (past versions are immutable, so repeat queries on the same range cost zero new API calls).
+
+**Required scope:** `file_versions:read` (OAuth) or **Versions** (Read) on a Personal Access Token, in addition to the standard `file_content:read`.
+
+### `figma_get_file_versions`
+
+List a file's version history with author, label, description, and timestamp metadata. Auto-paginates up to `max_versions`. Defaults to **labeled-only** (skips auto-saves) — pass `include_autosaves: true` to see every saved state.
+
+**Usage:**
+```javascript
+figma_get_file_versions({
+  fileUrl: 'https://www.figma.com/design/abc123/My-File',  // optional
+  include_autosaves: false,                                // default
+  max_versions: 50,                                        // default 50, max 200
+  cursor: 'vSomeId'                                        // optional, for pagination
+})
+```
+
+Returns `{ versions: [...], pagination: { has_more, next_cursor, returned, filtered_out_autosaves } }`. Each version entry includes `id`, `label`, `description`, `created_at`, `user.handle`, and `is_labeled`.
+
+### `figma_get_file_at_version`
+
+Snapshot a file (or selected nodes) as it existed at a past `version_id`. Thin wrapper over `figma_get_file_data` with the version param plumbed through.
+
+**Usage:**
+```javascript
+figma_get_file_at_version({
+  version_id: '2332825592044334783',
+  node_ids: ['4271:9562'],   // optional — scope to specific nodes
+  depth: 2                    // optional — limit recursion
+})
+```
+
+### `figma_diff_versions`
+
+Structured diff between two versions. Always returns a cheap page-structure diff (~2 API calls, parallel). When `component_ids` are passed, additionally produces per-node diffs at depth=2: added/removed children (variants), name/description changes, `componentPropertyDefinitions` changes, and `boundVariables` deltas.
+
+**Usage:**
+```javascript
+figma_diff_versions({
+  from_version: '2285226350723738406',
+  to_version: '2332825592044334783',  // or 'current' for HEAD
+  component_ids: ['4271:9562'],        // optional — falls back to current Figma selection
+  mode: 'detailed'                     // 'summary' | 'standard' (default) | 'detailed'
+})
+```
+
+**Note:** Variable VALUE history is not retrievable from Figma REST API. Variable definition value changes between versions are not represented; only binding-reference changes on scoped nodes are detected. This limitation is surfaced in the response's `notes[]`.
+
+### `figma_get_changes_since_version`
+
+Convenience wrapper for `figma_diff_versions` with `to_version="current"` (HEAD). Useful for "what's changed since the last code-sync" workflows.
+
+```javascript
+figma_get_changes_since_version({
+  since_version: '2332825592044334783',
+  component_ids: ['4271:9562']  // optional, falls back to selection
+})
+```
+
+### `figma_generate_changelog`
+
+Markdown changelog generator. Wraps `figma_diff_versions` with author enrichment (one extra cheap API call to look up labels and authors for the from/to versions). Returns BOTH a `markdown` string ready for release notes / PRs / Storybook MDX, and the structured diff payload.
+
+```javascript
+figma_generate_changelog({
+  from_version: 'vEarlier',
+  to_version: 'current',
+  component_ids: ['4271:9562'],   // optional, falls back to selection
+  mode: 'standard'                // 'summary' | 'standard' (default) | 'detailed'
+})
+```
+
+Mode controls verbosity: `summary` produces a one-line release note; `standard` includes sectioned page + per-component change counts; `detailed` includes per-property and per-binding bullets.
+
+### `figma_blame_node`
+
+Find the version that introduced a specific change to a node — answers "who/when added this." Walks history backward via **binary search** (~log₂(N) probes instead of N), so a 200-version lookback typically costs ~8 API calls instead of 200.
+
+```javascript
+figma_blame_node({
+  node_id: '4271:9562',                          // optional, falls back to selection
+  target_component_property: 'Disabled#1:2',     // OR target_child_node_id
+  start_version: 'current',                      // walk backward from here
+  max_versions_to_walk: 200,                     // default 200, max 500
+  include_autosaves: true                        // default true — better attribution
+})
+```
+
+Returns `{ introduced_at: { version_id, label, created_at, user_handle, is_labeled }, attribution_certainty, summary, notes }`.
+
+`attribution_certainty` is one of:
+- `"exact"` — the introduction point is fully localized and authored by a real user
+- `"system_attributed"` — the introducing version was a system-triggered autosave (`user="Figma"`); set `include_autosaves: false` and re-run to find the labeled shipping author
+- `"exists_at_lookback_horizon"` — the actual introduction is older than `max_versions_to_walk`; raise the cap and retry
+- `"metadata_unavailable"` — introduction was at `start_version` itself but author lookup couldn't reach it within the version-list lookback
+
+**Honest about limits:** binary search assumes the target's existence is monotonic (added once, never removed). If the target was added, removed, then re-added, the tool may report a different introduction point than the original. This is called out in `notes[]` on every response.
 
 ---
 

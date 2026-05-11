@@ -49,25 +49,27 @@ export class CloudWebSocketConnector implements IFigmaConnector {
 	}
 
 	async getVariables(fileKey?: string): Promise<any> {
+		// IMPORTANT: bare try/catch with top-level `return`, NO inner IIFE.
+		// See issue #68 + the matching note in websocket-connector.ts. The plugin
+		// (code.js) wraps every EXECUTE_CODE payload in its own async IIFE; nesting
+		// another swallows the inner return and silently drops the variables.
 		const code = `
-      (async () => {
-        try {
-          if (typeof figma === 'undefined') {
-            throw new Error('Figma API not available in this context');
-          }
-          const variables = await figma.variables.getLocalVariablesAsync();
-          const collections = await figma.variables.getLocalVariableCollectionsAsync();
-          return {
-            success: true,
-            timestamp: Date.now(),
-            fileMetadata: { fileName: figma.root.name, fileKey: figma.fileKey || null },
-            variables: variables.map(function(v) { return { id: v.id, name: v.name, key: v.key, resolvedType: v.resolvedType, valuesByMode: v.valuesByMode, variableCollectionId: v.variableCollectionId, scopes: v.scopes, description: v.description, hiddenFromPublishing: v.hiddenFromPublishing }; }),
-            variableCollections: collections.map(function(c) { return { id: c.id, name: c.name, key: c.key, modes: c.modes, defaultModeId: c.defaultModeId, variableIds: c.variableIds }; })
-          };
-        } catch (error) {
-          return { success: false, error: error.message };
+      try {
+        if (typeof figma === 'undefined') {
+          throw new Error('Figma API not available in this context');
         }
-      })()
+        const variables = await figma.variables.getLocalVariablesAsync();
+        const collections = await figma.variables.getLocalVariableCollectionsAsync();
+        return {
+          success: true,
+          timestamp: Date.now(),
+          fileMetadata: { fileName: figma.root.name, fileKey: figma.fileKey || null },
+          variables: variables.map(function(v) { return { id: v.id, name: v.name, key: v.key, resolvedType: v.resolvedType, valuesByMode: v.valuesByMode, variableCollectionId: v.variableCollectionId, scopes: v.scopes, description: v.description, hiddenFromPublishing: v.hiddenFromPublishing }; }),
+          variableCollections: collections.map(function(c) { return { id: c.id, name: c.name, key: c.key, modes: c.modes, defaultModeId: c.defaultModeId, variableIds: c.variableIds }; })
+        };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
     `;
 		return this.sendCommand('EXECUTE_CODE', { code, timeout: 30000 }, 32000);
 	}
@@ -314,6 +316,17 @@ export class CloudWebSocketConnector implements IFigmaConnector {
 	}
 
 	// ============================================================================
+	// Component accessibility audit
+	// ============================================================================
+
+	async auditComponentAccessibility(nodeId?: string, targetSize?: number): Promise<any> {
+		const params: any = {};
+		if (nodeId) params.nodeId = nodeId;
+		if (targetSize !== undefined) params.targetSize = targetSize;
+		return this.sendCommand('AUDIT_COMPONENT_ACCESSIBILITY', params, 120000);
+	}
+
+	// ============================================================================
 	// FigJam operations
 	// ============================================================================
 
@@ -325,12 +338,16 @@ export class CloudWebSocketConnector implements IFigmaConnector {
 		return this.sendCommand('CREATE_STICKIES', params, 30000);
 	}
 
-	async createConnector(params: { startNodeId: string; endNodeId: string; label?: string }): Promise<any> {
+	async createConnector(params: { startNodeId: string; endNodeId: string; label?: string; startMagnet?: string; endMagnet?: string }): Promise<any> {
 		return this.sendCommand('CREATE_CONNECTOR', params);
 	}
 
-	async createShapeWithText(params: { text?: string; shapeType?: string; x?: number; y?: number }): Promise<any> {
+	async createShapeWithText(params: { text?: string; shapeType?: string; x?: number; y?: number; width?: number; height?: number; fillColor?: string; strokeColor?: string; fontSize?: number; strokeDashPattern?: string }): Promise<any> {
 		return this.sendCommand('CREATE_SHAPE_WITH_TEXT', params);
+	}
+
+	async createSection(params: { name?: string; x?: number; y?: number; width?: number; height?: number; fillColor?: string }): Promise<any> {
+		return this.sendCommand('CREATE_SECTION', params);
 	}
 
 	async createTable(params: { rows: number; columns: number; data?: string[][]; x?: number; y?: number }): Promise<any> {
@@ -405,12 +422,20 @@ export class CloudWebSocketConnector implements IFigmaConnector {
 		return this.sendCommand('SKIP_SLIDE', params, 5000);
 	}
 
-	async addTextToSlide(params: { slideId: string; text: string; x?: number; y?: number; fontSize?: number }): Promise<any> {
+	async addTextToSlide(params: { slideId: string; text: string; x?: number; y?: number; fontSize?: number; fontFamily?: string; fontStyle?: string; color?: string; textAlign?: string; width?: number; lineHeight?: number; letterSpacing?: number; textCase?: string }): Promise<any> {
 		return this.sendCommand('ADD_TEXT_TO_SLIDE', params, 10000);
 	}
 
 	async addShapeToSlide(params: { slideId: string; shapeType: string; x: number; y: number; width: number; height: number; fillColor?: string }): Promise<any> {
 		return this.sendCommand('ADD_SHAPE_TO_SLIDE', params, 5000);
+	}
+
+	async setSlideBackground(params: { slideId: string; color: string }): Promise<any> {
+		return this.sendCommand('SET_SLIDE_BACKGROUND', params, 5000);
+	}
+
+	async getTextStyles(): Promise<any> {
+		return this.sendCommand('GET_TEXT_STYLES', {}, 5000);
 	}
 
 	// ============================================================================

@@ -4,7 +4,7 @@ description: "Your design system as an API. Connect AI to Figma for extraction, 
 ---
 
 <Note>
-**New in v1.19.0 — High-Fidelity Design-to-Code:** Deep component trees with resolved design tokens, variant state machines with CSS pseudo-class mappings, and codebase-aware component scanning that prevents recreating existing components. 90+ tools total. [See what's new →](/figma-mcp-vs-figma-console-mcp)
+**New in v1.23.0 — Version History & Time-Series Awareness:** Six new tools turn a Figma file from a static snapshot into a queryable history. List versions, snapshot any past version, diff two versions for component/binding deltas, generate markdown changelogs ready for release notes, and trace when (and by whom) a property or variant was introduced via a binary-search blame walker. 100+ tools total. [See what's new →](/tools#-version-history-tools)
 </Note>
 
 # Your Design System as an API
@@ -20,8 +20,8 @@ Figma Console MCP bridges the gap between design and development—giving AI ass
   <Card title="Create" icon="wand-magic-sparkles">
     Design files, FigJam boards, and Slides presentations
   </Card>
-  <Card title="Debug" icon="bug">
-    Real-time console logs from your plugins
+  <Card title="Audit" icon="universal-access">
+    Accessibility scanning across design and code
   </Card>
 </Columns>
 
@@ -168,6 +168,17 @@ Real component data. Real token values. Real code that uses your actual design s
 
     [Full Slides Guide →](/slides)
   </Accordion>
+
+  <Accordion title="Accessibility Scanning" icon="universal-access">
+    Full-spectrum WCAG coverage across design and code:
+
+    - **Design-side lint** — 14 WCAG checks with AA/best-practice level tagging: contrast, non-text contrast, color-only, focus indicators, disabled context, spacing, alt text, heading hierarchy, reflow, reading order, token misuse
+    - **Component audit** — State coverage scoring, focus indicator quality, color-blind simulation (protanopia, deuteranopia, tritanopia)
+    - **Code-side scan** — axe-core with 104 rules via JSDOM: ARIA, labels, landmarks, semantics, headings
+    - **Parity bridge** — 9 checks ensuring design accessibility intent survives code implementation
+
+    [Full Accessibility Guide →](/tools#-accessibility-tools)
+  </Accordion>
 </AccordionGroup>
 
 ---
@@ -176,17 +187,17 @@ Real component data. Real token values. Real code that uses your actual design s
 
 <Columns cols={3}>
   <Card title="NPX Setup (Recommended)" icon="bolt" href="/setup#-npx-setup-recommended">
-    **Full capabilities — 90+ tools**
+    **Full capabilities — 100+ tools**
 
     All tools including real-time monitoring. Requires Node.js and a Figma token.
   </Card>
   <Card title="Cloud Mode" icon="cloud-arrow-up" href="/setup#-cloud-mode-web-ai-clients">
-    **Web AI clients — 79 tools**
+    **Web AI clients — 83 tools**
 
     Full write access from Claude.ai, v0, Replit, or Lovable. Pair with a code — no Node.js needed.
   </Card>
   <Card title="Remote (Read-Only)" icon="cloud" href="/setup#-remote-mode-read-only-exploration">
-    **Quick exploration — 79 tools**
+    **Quick exploration — 83 tools**
 
     Zero setup, just paste a URL. Read design data and take screenshots.
   </Card>
@@ -244,7 +255,7 @@ Real component data. Real token values. Real code that uses your actual design s
     Real scenarios and workflows
   </Card>
   <Card title="All Tools" icon="wrench" href="/tools">
-    Complete reference for 90+ tools
+    Complete reference for 100+ tools
   </Card>
   <Card title="Troubleshooting" icon="circle-question" href="/troubleshooting">
     Common issues and solutions
